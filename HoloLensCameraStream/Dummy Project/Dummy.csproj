@@ -38,6 +38,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="CameraIntrinsics.cs" />
     <Compile Include="CameraParameters.cs" />
     <Compile Include="CapturePixelFormat.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

@@ -48,7 +48,12 @@ namespace HoloLensCameraStream
             get; set;
         }
 
-        public static void CreateAync(OnVideoCaptureResourceCreatedCallback onCreatedCallback)
+        public object WorldOrigin
+        {
+            get; set;
+        }
+
+        public static void CreateAync(OnVideoCaptureResourceCreatedCallback onCreatedCallback, bool sharedStream=false)
         {
             throw new NotImplementedException();
         }

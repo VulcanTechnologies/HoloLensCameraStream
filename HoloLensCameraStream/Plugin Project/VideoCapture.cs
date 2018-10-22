@@ -20,7 +20,6 @@ using Windows.Foundation;
 using System.Diagnostics;
 
 
-
 namespace HoloLensCameraStream
 {
     /// <summary>
@@ -116,12 +115,38 @@ namespace HoloLensCameraStream
         {
             set
             {
-                worldOrigin = (SpatialCoordinateSystem)Marshal.GetObjectForIUnknown(value);
+                //worldOrigin = Marshal.PtrToStructure<SpatialCoordinateSystem>(value);
+
+                if (value == null)
+                {
+                    throw new ArgumentException("World origin pointer is null");
+                }
+                
+                var obj = Marshal.GetObjectForIUnknown(value);
+                var scs = obj as SpatialCoordinateSystem;
+                worldOrigin = scs ?? throw new InvalidCastException("Failed to set SpatialCoordinateSystem from IntPtr");
             }
         }
 
-        static readonly MediaStreamType STREAM_TYPE = MediaStreamType.VideoPreview;
+        /// <summary>
+        /// Allow direct setting of the spatial coordinate system due to unity bug in NET Native builds
+        /// https://issuetracker.unity3d.com/issues/uwp-compile-net-native-for-hololens-causes-spatialcoordinatesystem-marshal-dot-getobjectforiunknown-exception
+        /// To use this, cache the coordinate system on scene load with 
+        /// SpatialCoordinateSystem camStreamCS = Windows.Perception.Spatial.SpatialLocator.GetDefault().CreateStationaryFrameOfReferenceAtCurrentLocation().CoordinateSystem
+        /// Then inject when you create the videocapture.
+        /// </summary>
+        public SpatialCoordinateSystem WorldOrigin
+        {
+            set
+            {
+                worldOrigin = value;
+            }
+        }
+
+        static readonly MediaStreamType STREAM_TYPE = MediaStreamType.VideoRecord;
         static readonly Guid ROTATION_KEY = new Guid("C380465D-2271-428C-9B83-ECEA3B4A85C1");
+
+        private bool _sharedStream = false;
 
         MediaFrameSourceGroup _frameSourceGroup;
         MediaFrameSourceInfo _frameSourceInfo;
@@ -141,12 +166,12 @@ namespace HoloLensCameraStream
         /// If the instance failed to be created, the instance returned will be null. Also, holograms will not appear in the video.
         /// </summary>
         /// <param name="onCreatedCallback">This callback will be invoked when the VideoCapture instance is created and ready to be used.</param>
-        public static async void CreateAync(OnVideoCaptureResourceCreatedCallback onCreatedCallback)
+        public static async void CreateAync(OnVideoCaptureResourceCreatedCallback onCreatedCallback, bool sharedStream = false)
         {
             var allFrameSourceGroups = await MediaFrameSourceGroup.FindAllAsync();                                              //Returns IReadOnlyList<MediaFrameSourceGroup>
-            var candidateFrameSourceGroups = allFrameSourceGroups.Where(group => group.SourceInfos.Any(IsColorVideo));   //Returns IEnumerable<MediaFrameSourceGroup>
+            var candidateFrameSourceGroups = allFrameSourceGroups.Where(group => group.SourceInfos.Any(IsColorVideo));          //Returns IEnumerable<MediaFrameSourceGroup>
             var selectedFrameSourceGroup = candidateFrameSourceGroups.FirstOrDefault();                                         //Returns a single MediaFrameSourceGroup
-            
+
             if (selectedFrameSourceGroup == null)
             {
                 onCreatedCallback?.Invoke(null);
@@ -154,23 +179,25 @@ namespace HoloLensCameraStream
             }
 
             var selectedFrameSourceInfo = selectedFrameSourceGroup.SourceInfos.FirstOrDefault(); //Returns a MediaFrameSourceInfo
-            
+
+
             if (selectedFrameSourceInfo == null)
             {
                 onCreatedCallback?.Invoke(null);
                 return;
             }
-            
+
             var devices = await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture);   //Returns DeviceCollection
             var deviceInformation = devices.FirstOrDefault();                               //Returns a single DeviceInformation
             
             if (deviceInformation == null)
             {
-                onCreatedCallback(null);
+                onCreatedCallback?.Invoke(null);
                 return;
             }
 
             var videoCapture = new VideoCapture(selectedFrameSourceGroup, selectedFrameSourceInfo, deviceInformation);
+            videoCapture._sharedStream = sharedStream;
             await videoCapture.CreateMediaCaptureAsync();
             onCreatedCallback?.Invoke(videoCapture);
         }
@@ -234,30 +261,44 @@ namespace HoloLensCameraStream
         public async void StartVideoModeAsync(CameraParameters setupParams, OnVideoModeStartedCallback onVideoModeStartedCallback)
         {
             var mediaFrameSource = _mediaCapture.FrameSources[_frameSourceInfo.Id]; //Returns a MediaFrameSource
-            
+
             if (mediaFrameSource == null)
             {
                 onVideoModeStartedCallback?.Invoke(new VideoCaptureResult(1, ResultType.UnknownError, false));
                 return;
             }
 
+            bool requires_change =
+                mediaFrameSource.CurrentFormat.VideoFormat.Width != setupParams.cameraResolutionWidth
+                || mediaFrameSource.CurrentFormat.VideoFormat.Height != setupParams.cameraResolutionHeight
+                || (int)Math.Round(((double)mediaFrameSource.CurrentFormat.FrameRate.Numerator / mediaFrameSource.CurrentFormat.FrameRate.Denominator)) != setupParams.frameRate;
+            if (requires_change)
+            {
+                await SetFrameType(mediaFrameSource, setupParams.cameraResolutionWidth, setupParams.cameraResolutionHeight, setupParams.frameRate);
+            }
+
+			//	gr: taken from here https://forums.hololens.com/discussion/2009/mixedrealitycapture
+			IVideoEffectDefinition ved = new VideoMRCSettings( setupParams.enableHolograms, setupParams.enableVideoStabilization, setupParams.videoStabilizationBufferSize, setupParams.hologramOpacity, setupParams.recordingIndicatorVisible );
+			await _mediaCapture.AddVideoEffectAsync(ved, STREAM_TYPE);
+
+            if (!_sharedStream)
+            {
+                VideoEncodingProperties properties = GetVideoEncodingPropertiesForCameraParams(setupParams);
+
+                // Historical context: https://github.com/VulcanTechnologies/HoloLensCameraStream/issues/6
+
+                if (setupParams.rotateImage180Degrees)
+                {
+                    properties.Properties.Add(ROTATION_KEY, 180);
+                }
+                // We can't modify the stream properties if we are sharing the stream
+                await _mediaCapture.VideoDeviceController.SetMediaStreamPropertiesAsync(STREAM_TYPE, properties);
+            }
+           
             var pixelFormat = ConvertCapturePixelFormatToMediaEncodingSubtype(setupParams.pixelFormat);
             _frameReader = await _mediaCapture.CreateFrameReaderAsync(mediaFrameSource, pixelFormat);
             _frameReader.FrameArrived += HandleFrameArrived;
             await _frameReader.StartAsync();
-            VideoEncodingProperties properties = GetVideoEncodingPropertiesForCameraParams(setupParams);
-
-            // Historical context: https://github.com/VulcanTechnologies/HoloLensCameraStream/issues/6
-            if (setupParams.rotateImage180Degrees)
-            {
-                properties.Properties.Add(ROTATION_KEY, 180);
-            }
-			
-			//	gr: taken from here https://forums.hololens.com/discussion/2009/mixedrealitycapture
-			IVideoEffectDefinition ved = new VideoMRCSettings( setupParams.enableHolograms, setupParams.enableVideoStabilization, setupParams.videoStabilizationBufferSize, setupParams.hologramOpacity );
-			await _mediaCapture.AddVideoEffectAsync(ved, MediaStreamType.VideoPreview);
-        
-            await _mediaCapture.VideoDeviceController.SetMediaStreamPropertiesAsync(STREAM_TYPE, properties);
 
             onVideoModeStartedCallback?.Invoke(new VideoCaptureResult(0, ResultType.Success, true));
         }
@@ -346,17 +387,37 @@ namespace HoloLensCameraStream
             {
                 throw new Exception("The MediaCapture object has already been created.");
             }
-
             _mediaCapture = new MediaCapture();
             await _mediaCapture.InitializeAsync(new MediaCaptureInitializationSettings()
             {
                 VideoDeviceId = _deviceInfo.Id,
                 SourceGroup = _frameSourceGroup,
-                MemoryPreference = MediaCaptureMemoryPreference.Cpu, //TODO: Should this be the other option, Auto? GPU is not an option.
-                StreamingCaptureMode = StreamingCaptureMode.Video
+                SharingMode = _sharedStream ? MediaCaptureSharingMode.SharedReadOnly : MediaCaptureSharingMode.ExclusiveControl,
+                MemoryPreference = MediaCaptureMemoryPreference.Cpu,
+                StreamingCaptureMode = StreamingCaptureMode.Video,
+                
             });
+
             _mediaCapture.VideoDeviceController.Focus.TrySetAuto(true);
         }
+
+        private Task SetFrameType(MediaFrameSource frameSource, int width, int height, int framerate)
+        {
+            var preferredFormat = frameSource.SupportedFormats.Where(format =>
+            {
+                return format.VideoFormat.Width == width
+                    && format.VideoFormat.Height == height
+                    && (int)Math.Round(((double)format.FrameRate.Numerator / format.FrameRate.Denominator)) == framerate;
+            });
+
+            if (preferredFormat.Count() == 0) {
+                throw new ArgumentException(String.Format("No frame type exists for {0}x{1}@{2}", width, height, framerate));
+            }
+
+            return frameSource.SetFormatAsync(preferredFormat.First()).AsTask();
+
+        }
+
 
         void HandleFrameArrived(MediaFrameReader sender, MediaFrameArrivedEventArgs args)
         {
@@ -442,13 +503,14 @@ namespace HoloLensCameraStream
             get; private set;
         }
         
-        public VideoMRCSettings(bool HologramCompositionEnabled, bool VideoStabilizationEnabled, int VideoStabilizationBufferLength, float GlobalOpacityCoefficient)
+        public VideoMRCSettings(bool HologramCompositionEnabled, bool VideoStabilizationEnabled, int VideoStabilizationBufferLength, float GlobalOpacityCoefficient, bool RecordingIndicatorEnabled)
         {
             Properties = (IPropertySet)new PropertySet();
             Properties.Add("HologramCompositionEnabled", HologramCompositionEnabled);
             Properties.Add("VideoStabilizationEnabled", VideoStabilizationEnabled);
             Properties.Add("VideoStabilizationBufferLength", VideoStabilizationBufferLength);
             Properties.Add("GlobalOpacityCoefficient", GlobalOpacityCoefficient);
+            Properties.Add("RecordingIndicatorEnabled", RecordingIndicatorEnabled);
         }
     }
 }

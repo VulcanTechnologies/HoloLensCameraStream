@@ -9,6 +9,7 @@ using UnityEngine.VR.WSA;
 using System;
 
 using HoloLensCameraStream;
+using System.Collections.Generic;
 
 /// <summary>
 /// This example gets the video frames at 30 fps and displays them on a Unity texture,
@@ -23,10 +24,13 @@ public class VideoPanelApp : MonoBehaviour
     VideoPanel _videoPanelUI;
     VideoCapture _videoCapture;
 
-    IntPtr _spatialCoordinateSystemPtr; 
+    IntPtr _spatialCoordinateSystemPtr;
+
+    Queue<Action> _mainThreadActions;
 
     void Start()
     {
+        _mainThreadActions = new Queue<Action>();
         //Fetch a pointer to Unity's spatial coordinate system if you need pixel mapping
         _spatialCoordinateSystemPtr = WorldManager.GetNativeISpatialCoordinateSystemPtr();
 
@@ -36,6 +40,25 @@ public class VideoPanelApp : MonoBehaviour
         //CameraStreamManager.Instance.GetVideoCaptureAsync(v => videoCapture = v);
 
         _videoPanelUI = GameObject.FindObjectOfType<VideoPanel>();
+    }
+
+    private void Update()
+    {
+        lock (_mainThreadActions)
+        {
+            while (_mainThreadActions.Count > 0)
+            {
+                _mainThreadActions.Dequeue().Invoke();
+            }
+        }
+    }
+
+    private void Enqueue(Action action)
+    {
+        lock (_mainThreadActions)
+        {
+            _mainThreadActions.Enqueue(action);
+        }
     }
 
     private void OnDestroy()
@@ -74,8 +97,9 @@ public class VideoPanelApp : MonoBehaviour
         cameraParams.rotateImage180Degrees = true; //If your image is upside down, remove this line.
         cameraParams.enableHolograms = false;
 
-        UnityEngine.WSA.Application.InvokeOnAppThread(() => { _videoPanelUI.SetResolution(_resolution.width, _resolution.height); }, false);
+        Debug.Log("Configuring camera: " + _resolution.width + "x" + _resolution.height + " | " + cameraParams.pixelFormat);
 
+        Enqueue(() => _videoPanelUI.SetResolution(_resolution.width, _resolution.height));
         videoCapture.StartVideoModeAsync(cameraParams, OnVideoModeStarted);
     }
 
@@ -92,6 +116,13 @@ public class VideoPanelApp : MonoBehaviour
 
     void OnFrameSampleAcquired(VideoCaptureSample sample)
     {
+        lock (_mainThreadActions)
+        {
+            if (_mainThreadActions.Count > 2)
+            {
+                return;
+            }
+        }
         //When copying the bytes out of the buffer, you must supply a byte[] that is appropriately sized.
         //You can reuse this byte[] until you need to resize it (for whatever reason).
         if (_latestImageBytes == null || _latestImageBytes.Length < sample.dataLength)
@@ -116,10 +147,8 @@ public class VideoPanelApp : MonoBehaviour
 
         sample.Dispose();
 
-        //This is where we actually use the image data
-        UnityEngine.WSA.Application.InvokeOnAppThread(() =>
-        {
-            _videoPanelUI.SetBytes(_latestImageBytes);
-        }, false);
+        //Debug.Log("Got frame: " + sample.FrameWidth + "x" + sample.FrameHeight + " | " + sample.pixelFormat);
+
+        Enqueue(() => _videoPanelUI.SetBytes(_latestImageBytes));
     }
 }

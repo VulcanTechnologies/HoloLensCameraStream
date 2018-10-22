@@ -69,18 +69,23 @@ namespace HoloLensCameraStream
 			set {	videoStabilizationBufferSize = value ? 15 : 0; }
 		}
 
+        public bool recordingIndicatorVisible;
+
         public CameraParameters(
             CapturePixelFormat pixelFormat = CapturePixelFormat.BGRA32,
             int cameraResolutionHeight = 720,
             int cameraResolutionWidth = 1280,
             int frameRate = 30,
-			bool rotateImage180Degrees = true)
+            bool rotateImage180Degrees = true, 
+            bool recordingIndicatorVisible = true
+            )
         {
             this.pixelFormat = pixelFormat;
             this.cameraResolutionHeight = cameraResolutionHeight;
             this.cameraResolutionWidth = cameraResolutionWidth;
             this.frameRate = frameRate;
 			this.rotateImage180Degrees = rotateImage180Degrees;
+            this.recordingIndicatorVisible = recordingIndicatorVisible;
 			videoStabilizationBufferSize = 0;
 			hologramOpacity = 0.0f;
         }
