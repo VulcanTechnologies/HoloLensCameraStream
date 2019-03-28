@@ -1,10 +1,10 @@
-﻿//  
+//  
 // Copyright (c) 2017 Vulcan, Inc. All rights reserved.  
 // Licensed under the Apache 2.0 license. See LICENSE file in the project root for full license information.
 //
 
 using UnityEngine;
-using UnityEngine.VR.WSA;
+
 
 using System;
 
@@ -28,7 +28,7 @@ public class VideoPanelApp : MonoBehaviour
     void Start()
     {
         //Fetch a pointer to Unity's spatial coordinate system if you need pixel mapping
-        _spatialCoordinateSystemPtr = WorldManager.GetNativeISpatialCoordinateSystemPtr();
+        _spatialCoordinateSystemPtr = UnityEngine.VR.WSA.WorldManager.GetNativeISpatialCoordinateSystemPtr();
 
         //Call this in Start() to ensure that the CameraStreamHelper is already "Awake".
         CameraStreamHelper.Instance.GetVideoCaptureAsync(OnVideoCaptureCreated);
@@ -90,6 +90,14 @@ public class VideoPanelApp : MonoBehaviour
         Debug.Log("Video capture started.");
     }
 
+    void Swap<T>(ref T lhs, ref T rhs)
+    {
+        T temp;
+        temp = lhs;
+        lhs = rhs;
+        rhs = temp;
+    }
+
     void OnFrameSampleAcquired(VideoCaptureSample sample)
     {
         //When copying the bytes out of the buffer, you must supply a byte[] that is appropriately sized.
@@ -98,8 +106,10 @@ public class VideoPanelApp : MonoBehaviour
         {
             _latestImageBytes = new byte[sample.dataLength];
         }
+
+        // edit the color of each frame
         sample.CopyRawImageDataIntoBuffer(_latestImageBytes);
-        
+
         //If you need to get the cameraToWorld matrix for purposes of compositing you can do it like this
         float[] cameraToWorldMatrix;
         if (sample.TryGetCameraToWorldMatrix(out cameraToWorldMatrix) == false)
@@ -112,6 +122,7 @@ public class VideoPanelApp : MonoBehaviour
         if (sample.TryGetProjectionMatrix(out projectionMatrix) == false)
         {
             return;
+
         }
 
         sample.Dispose();
@@ -119,7 +130,27 @@ public class VideoPanelApp : MonoBehaviour
         //This is where we actually use the image data
         UnityEngine.WSA.Application.InvokeOnAppThread(() =>
         {
+            int f = 10000;
+            int PixelSize = 4;
+            int width = _resolution.width;
+            int height = _resolution.height;
+            int Line = width * PixelSize;
+
+            // get normal image from mirror image
+            for (int i = 0; i < height; ++i)
+                for (int j = 0; j + 4 < Line / 2; j += 4)
+                {
+                    Swap<byte>(ref _latestImageBytes[Line * i + j], ref _latestImageBytes[Line * i + Line - j - 4]);
+                    Swap<byte>(ref _latestImageBytes[Line * i + j + 1], ref _latestImageBytes[Line * i + Line - j - 3]);
+                    Swap<byte>(ref _latestImageBytes[Line * i + j + 2], ref _latestImageBytes[Line * i + Line - j - 2]);
+                    Swap<byte>(ref _latestImageBytes[Line * i + j + 3], ref _latestImageBytes[Line * i + Line - j - 1]);
+
+                    // reduce the alpha
+                    //_latestImageBytes[Line * i + j + 3] = _latestImageBytes[Line * i + Line - j - 1] = 100;
+                }
+
+
             _videoPanelUI.SetBytes(_latestImageBytes);
-        }, false);
+        }, true);
     }
 }
