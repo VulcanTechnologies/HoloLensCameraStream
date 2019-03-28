@@ -1,4 +1,4 @@
-# HoloLensCameraStream for Unity(NormalDirectionImage Version)
+# HoloLensCameraStream for Unity
 This Unity plugin makes the HoloLens video camera frames available to a Unity app in real time. This enables Unity devs to easily use the HoloLens camera for computer vision (or anything they want).
 
 Use this if you need access to the HoloLens camera's frame buffer in Unity, including the [locatable camera attributes](https://developer.microsoft.com/en-us/windows/mixed-reality/locatable_camera).
